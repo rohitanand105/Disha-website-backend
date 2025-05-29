@@ -95,8 +95,8 @@ app.get("/api/employee/:id", async (req, res) => {
 app.post("/api/employee", async (req, res) => {
   try {
     const {
-      serviceType, customerName, circle, cluster, city, domain, employeeId, aadharNo, employeeName, 
-      jobCategory, jobRole, empContactNumber, dateOfJoining, activeStatus, dateOfLeaving, ctc, 
+      serviceType, customerName, circle, cluster, city, domain, employeeId, aadharNo, employeeName,
+      jobCategory, jobRole, empContactNumber, dateOfJoining, activeStatus, dateOfLeaving, ctc,
       conveyance, allowance1, allowance2, tctc, reportingManager1, reportingManager2, refEmpId
     } = req.body;
 
@@ -131,9 +131,9 @@ app.post("/api/employee", async (req, res) => {
     `;
 
     const values = [
-      serviceType, customerName, circle, cluster, city, domain, employeeId, aadharNo, 
-      employeeName, jobCategory, jobRole, empContactNumber, dateOfJoining, activeStatus, 
-      dateOfLeaving || null, ctc, conveyance, allowance1, allowance2, tctc, 
+      serviceType, customerName, circle, cluster, city, domain, employeeId, aadharNo,
+      employeeName, jobCategory, jobRole, empContactNumber, dateOfJoining, activeStatus,
+      dateOfLeaving || null, ctc, conveyance, allowance1, allowance2, tctc,
       reportingManager1, reportingManager2, refEmpId
     ];
 
@@ -213,6 +213,7 @@ app.post("/api/register", async (req, res) => {
     res.status(500).json({ success: false, message: "Registration failed", error });
   }
 });
+
 
 app.get("/api/mnpr", async (req, res) => {
   const { month } = req.query;
@@ -306,15 +307,22 @@ const normalizeKey = (key) => {
   }
   return null; // explicitly return null if no match
 };
-
-
 app.post("/api/mnpr/upload", upload.single("file"), async (req, res) => {
-  const month = req.body.month; // e.g., '2025-06'
+  const month = req.body.month;
   if (!month) {
     return res.status(400).json({ success: false, message: "Month is required." });
   }
 
   try {
+    // 🔍 Check if data already exists for this month
+    const [existing] = await pool.query(`SELECT 1 FROM mnpr WHERE month = ? LIMIT 1`, [month]);
+    if (existing.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `Data for month ${month} already exists. Please delete the existing data before uploading a new file.`,
+      });
+    }
+
     const filePath = req.file.path;
     const workbook = xlsx.readFile(filePath);
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -322,14 +330,7 @@ app.post("/api/mnpr/upload", upload.single("file"), async (req, res) => {
 
     const headers = rawData[0];
     const dataRows = rawData.slice(1);
-
-
-    // Normalize header mapping
     const headerMap = headers.map(normalizeKey);
-
-    
-    console.log("Headers from Excel:", headers);
-    console.log("Mapped headers:", headerMap);
 
     const records = dataRows.map((row) => {
       const record = { month };
@@ -339,14 +340,12 @@ app.post("/api/mnpr/upload", upload.single("file"), async (req, res) => {
           record[dbCol] = typeof val === "string" ? val.trim() : val;
         }
       });
-      // Ensure RAG are numbers
       record.R = Number(record.R) || 0;
       record.A = Number(record.A) || 0;
       record.G = Number(record.G) || 0;
       return record;
     });
 
-    // Prepare data for bulk insert
     const insertValues = records.map((r) => [
       r.customer, r.circle, r.domain, r.service, r.Role,
       r.R, r.A, r.G, r.month
@@ -357,12 +356,28 @@ app.post("/api/mnpr/upload", upload.single("file"), async (req, res) => {
       [insertValues]
     );
 
-    fs.unlinkSync(filePath); // Clean up uploaded file
+    fs.unlinkSync(filePath);
     res.json({ success: true, message: `Data uploaded successfully for month ${month}` });
 
   } catch (error) {
     console.error("❌ Upload Error:", error);
     res.status(500).json({ success: false, message: "Upload failed", error });
+  }
+});
+
+app.delete("/api/mnpr", async (req, res) => {
+  const { month } = req.query;
+
+  if (!month) {
+    return res.status(400).json({ success: false, message: "Month is required." });
+  }
+
+  try {
+    const [result] = await pool.query(`DELETE FROM mnpr WHERE month = ?`, [month]);
+    res.status(200).json({ success: true, message: `Deleted ${result.affectedRows} records for month ${month}` });
+  } catch (error) {
+    console.error("❌ Deletion Error:", error);
+    res.status(500).json({ success: false, message: "Deletion failed", error });
   }
 });
 
@@ -425,4 +440,3 @@ app.get("/api/employee", authenticateToken, async (req, res) => {
 // ✅ Start the server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`✅ Server is running on port ${PORT}`));
-  
