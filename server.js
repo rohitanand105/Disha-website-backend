@@ -6,6 +6,7 @@ require("dotenv").config();
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
+
 const app = express();
 app.use(bodyParser.json());
 app.use(cors());
@@ -28,6 +29,7 @@ const pool = mysql.createPool(dbConfig);
 const JWT_SECRET = "SuperSecretKey1243"; // Change as needed
 
 // ✅ API to get all employees
+
 app.get("/api/employee", async (req, res) => {
   try {
     const { circle } = req.query; // Get the region from frontend request
@@ -212,6 +214,159 @@ app.post("/api/register", async (req, res) => {
   }
 });
 
+app.get("/api/mnpr", async (req, res) => {
+  const { month } = req.query;
+
+  try {
+    let query = `SELECT customer, circle, domain, service, Role, R, A, G FROM mnpr`;
+    let params = [];
+
+    if (month) {
+      query += ` WHERE month = ?`;
+      params.push(month);
+    }
+
+    const [results] = await pool.query(query, params);
+    res.status(200).json({ success: true, empData: results });
+
+  } catch (error) {
+    console.error("❌ Database Query Error:", error);
+    res.status(500).json({ success: false, message: "Database query failed", error });
+  }
+});
+
+
+app.post("/api/mnpr/update-g", async (req, res) => {
+  const { circle, role, g, month } = req.body;
+
+  // Input validation
+  if (!circle || !role || typeof g !== 'number' || !month) {
+    return res.status(400).json({ success: false, message: "Invalid input. 'circle', 'role', numeric 'g', and 'month' are required." });
+  }
+
+  try {
+    const query = `
+      UPDATE mnpr
+      SET G = ?
+      WHERE circle = ? AND Role = ? AND month = ?
+    `;
+
+    const [result] = await pool.query(query, [g, circle, role, month]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: "No matching record found to update." });
+    }
+
+    res.status(200).json({ success: true, message: "G value updated successfully." });
+
+  } catch (error) {
+    console.error("❌ Update Error:", error);
+    res.status(500).json({ success: false, message: "Database update failed.", error });
+  }
+});
+
+const multer = require('multer');
+const xlsx = require('xlsx');
+const fs = require('fs');
+const path = require('path');
+
+// Define storage config
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, "uploads/"); // Make sure this folder exists
+  },
+  filename: (req, file, cb) => {
+    const uniqueName = `${Date.now()}-${file.originalname}`;
+    cb(null, uniqueName);
+  }
+});
+
+// Multer upload instance
+const upload = multer({ storage });
+
+// Column aliases for flexible Excel headers
+const expectedColumns = {
+  customer: ["customer", "customer name", "client"],
+  circle: ["circle", "region", "zone"],
+  domain: ["domain"],
+  service: ["service"],
+  Role: ["role", "designation", "position", "job role"],
+  R: ["r", "required"],
+  A: ["a", "available"],
+  G: ["g", "gap"]
+};
+
+// Normalize Excel column to DB column
+const normalizeKey = (key) => {
+  if (!key) return null;
+  const clean = key.toLowerCase().trim();
+  for (const [dbCol, aliases] of Object.entries(expectedColumns)) {
+    const lowerAliases = aliases.map(a => a.toLowerCase());
+    if (lowerAliases.includes(clean)) return dbCol;
+  }
+  return null; // explicitly return null if no match
+};
+
+
+app.post("/api/mnpr/upload", upload.single("file"), async (req, res) => {
+  const month = req.body.month; // e.g., '2025-06'
+  if (!month) {
+    return res.status(400).json({ success: false, message: "Month is required." });
+  }
+
+  try {
+    const filePath = req.file.path;
+    const workbook = xlsx.readFile(filePath);
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rawData = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: null });
+
+    const headers = rawData[0];
+    const dataRows = rawData.slice(1);
+
+
+    // Normalize header mapping
+    const headerMap = headers.map(normalizeKey);
+
+    
+    console.log("Headers from Excel:", headers);
+    console.log("Mapped headers:", headerMap);
+
+    const records = dataRows.map((row) => {
+      const record = { month };
+      row.forEach((val, idx) => {
+        const dbCol = headerMap[idx];
+        if (dbCol) {
+          record[dbCol] = typeof val === "string" ? val.trim() : val;
+        }
+      });
+      // Ensure RAG are numbers
+      record.R = Number(record.R) || 0;
+      record.A = Number(record.A) || 0;
+      record.G = Number(record.G) || 0;
+      return record;
+    });
+
+    // Prepare data for bulk insert
+    const insertValues = records.map((r) => [
+      r.customer, r.circle, r.domain, r.service, r.Role,
+      r.R, r.A, r.G, r.month
+    ]);
+
+    await pool.query(
+      `INSERT INTO mnpr (customer, circle, domain, service, Role, R, A, G, month) VALUES ?`,
+      [insertValues]
+    );
+
+    fs.unlinkSync(filePath); // Clean up uploaded file
+    res.json({ success: true, message: `Data uploaded successfully for month ${month}` });
+
+  } catch (error) {
+    console.error("❌ Upload Error:", error);
+    res.status(500).json({ success: false, message: "Upload failed", error });
+  }
+});
+
+
 // ✅ API to login
 app.post("/api/login", async (req, res) => {
   try {
@@ -267,25 +422,7 @@ app.get("/api/employee", authenticateToken, async (req, res) => {
 });
 
 
-app.get("/api/employee", async (req, res) => {
-  try {
-    let query = {};
-
-    // Dynamically add filters
-    Object.keys(req.query).forEach((key) => {
-      if (req.query[key]) {
-        query[key] = { $regex: new RegExp(req.query[key], "i") }; // Case-insensitive search
-      }
-    });
-
-    const employees = await EmployeeModel.find(query);
-    res.json({ success: true, empData: employees });
-  } catch (error) {
-    res.json({ success: false, message: "Error fetching employees" });
-  }
-});
-
-
 // ✅ Start the server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`✅ Server is running on port ${PORT}`));
+  

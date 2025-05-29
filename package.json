@@ -21,8 +21,15 @@
     "mysql": "^2.18.1",
     "mysql2": "^3.14.0",
     "react-router-dom": "^7.2.0",
+<<<<<<< HEAD
     "sequelize": "^6.37.7",
     "sequelize-cli": "^6.6.2",
+=======
+    "reflect-metadata": "^0.2.2",
+    "sequelize": "^6.37.7",
+    "sequelize-cli": "^6.6.2",
+    "typeorm": "^0.3.22",
+>>>>>>> e307525 (upload)
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
