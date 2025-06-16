@@ -215,12 +215,18 @@ app.post("/api/register", async (req, res) => {
 });
 
 
+// Keep only this
 app.get("/api/mnpr", async (req, res) => {
   const { month } = req.query;
 
   try {
-    let query = `SELECT customer, circle, domain, service, Role, R, A, G FROM mnpr`;
-    let params = [];
+    let query = `
+  SELECT Customer, Service, Circle, Cluster, Process, Emp_Code, Name,
+    DOJ, DOL, Status, Category_Job_Role, Job_Category, Stand_Job_Role, month
+  FROM mnpr
+`;
+
+    const params = [];
 
     if (month) {
       query += ` WHERE month = ?`;
@@ -236,35 +242,6 @@ app.get("/api/mnpr", async (req, res) => {
   }
 });
 
-
-app.post("/api/mnpr/update-g", async (req, res) => {
-  const { circle, role, g, month } = req.body;
-
-  // Input validation
-  if (!circle || !role || typeof g !== 'number' || !month) {
-    return res.status(400).json({ success: false, message: "Invalid input. 'circle', 'role', numeric 'g', and 'month' are required." });
-  }
-
-  try {
-    const query = `
-      UPDATE mnpr
-      SET G = ?
-      WHERE circle = ? AND Role = ? AND month = ?
-    `;
-
-    const [result] = await pool.query(query, [g, circle, role, month]);
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ success: false, message: "No matching record found to update." });
-    }
-
-    res.status(200).json({ success: true, message: "G value updated successfully." });
-
-  } catch (error) {
-    console.error("❌ Update Error:", error);
-    res.status(500).json({ success: false, message: "Database update failed.", error });
-  }
-});
 
 const multer = require('multer');
 const xlsx = require('xlsx');
@@ -285,79 +262,78 @@ const storage = multer.diskStorage({
 // Multer upload instance
 const upload = multer({ storage });
 
-// Column aliases for flexible Excel headers
-const expectedColumns = {
-  customer: ["customer", "customer name", "client"],
-  circle: ["circle", "region", "zone"],
-  domain: ["domain"],
-  service: ["service"],
-  Role: ["role", "designation", "position", "job role"],
-  R: ["r", "required"],
-  A: ["a", "available"],
-  G: ["g", "gap"]
-};
-
-// Normalize Excel column to DB column
-const normalizeKey = (key) => {
-  if (!key) return null;
-  const clean = key.toLowerCase().trim();
-  for (const [dbCol, aliases] of Object.entries(expectedColumns)) {
-    const lowerAliases = aliases.map(a => a.toLowerCase());
-    if (lowerAliases.includes(clean)) return dbCol;
+function normalizeKey(key) {
+  if (key === null || key === undefined || typeof key !== "string") {
+    return "";
   }
-  return null; // explicitly return null if no match
-};
+  return key.trim().toLowerCase().replace(/\s+/g, "_");
+}
+
 app.post("/api/mnpr/upload", upload.single("file"), async (req, res) => {
-  const month = req.body.month;
-  if (!month) {
-    return res.status(400).json({ success: false, message: "Month is required." });
+  const { month, company } = req.body;
+  if (!month || !company) {
+    return res.status(400).json({ success: false, message: "Month and Company are required." });
   }
 
   try {
-    // 🔍 Check if data already exists for this month
-    const [existing] = await pool.query(`SELECT 1 FROM mnpr WHERE month = ? LIMIT 1`, [month]);
+    const [existing] = await pool.query(
+      `SELECT 1 FROM mnpr WHERE month = ? AND Customer = ? LIMIT 1`,
+      [month, company]
+    );
+
     if (existing.length > 0) {
       return res.status(409).json({
         success: false,
-        message: `Data for month ${month} already exists. Please delete the existing data before uploading a new file.`,
+        message: `Data already exists for ${company} in ${month}. Please delete it first.`,
       });
     }
 
     const filePath = req.file.path;
     const workbook = xlsx.readFile(filePath);
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const rawData = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: null });
 
-    const headers = rawData[0];
-    const dataRows = rawData.slice(1);
-    const headerMap = headers.map(normalizeKey);
 
-    const records = dataRows.map((row) => {
-      const record = { month };
-      row.forEach((val, idx) => {
-        const dbCol = headerMap[idx];
-        if (dbCol) {
-          record[dbCol] = typeof val === "string" ? val.trim() : val;
-        }
+    const rawData = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: null }); // get array of rows
+    const headers = rawData[0].map(h => h?.toString().trim().replace(/\s+/g, "_")); // normalize headers
+    const rows = rawData.slice(1);
+
+    const records = rows.map(row => {
+      const obj = {};
+      headers.forEach((key, idx) => {
+        obj[key] = row[idx] != null ? row[idx].toString().trim() : null;
       });
-      record.R = Number(record.R) || 0;
-      record.A = Number(record.A) || 0;
-      record.G = Number(record.G) || 0;
-      return record;
+      obj["month"] = month;
+      return obj;
     });
 
     const insertValues = records.map((r) => [
-      r.customer, r.circle, r.domain, r.service, r.Role,
-      r.R, r.A, r.G, r.month
+      r.Customer,
+      r.Service,
+      r.Circle,
+      r.Cluster,
+      r.Process,
+      r.Emp_Code,
+      r.Name,
+      r.DOJ,
+      r.DOL,
+      r.Status,
+      r.Category_Job_Role,
+      r.Job_Category,
+      r.Stand_Job_Role,
+      r.month,
     ]);
 
     await pool.query(
-      `INSERT INTO mnpr (customer, circle, domain, service, Role, R, A, G, month) VALUES ?`,
+      `INSERT INTO mnpr (
+    Customer, Service, Circle, Cluster, Process, Emp_Code, Name,
+    DOJ, DOL, Status, Category_Job_Role, Job_Category, Stand_Job_Role, month
+  ) VALUES ?`,
       [insertValues]
     );
 
+
     fs.unlinkSync(filePath);
-    res.json({ success: true, message: `Data uploaded successfully for month ${month}` });
+    res.json({ success: true, message: `Data uploaded successfully for ${company} - ${month}` });
 
   } catch (error) {
     console.error("❌ Upload Error:", error);
@@ -365,7 +341,137 @@ app.post("/api/mnpr/upload", upload.single("file"), async (req, res) => {
   }
 });
 
+const parseExcelDate = (val) => {
+  if (!val || val === '-' || val === null) return null;
+  const d = new Date(val);
+  if (isNaN(d)) return null;
+  return d.toISOString().split("T")[0]; // format as yyyy-mm-dd
+};
+
+app.post("/api/mnpr/upload-all", upload.single("file"), async (req, res) => {
+  const { month } = req.body;
+  if (!month) {
+    return res.status(400).json({ success: false, message: "Month is required." });
+  }
+
+  try {
+    const [existing] = await pool.query(`SELECT 1 FROM mnpr WHERE month = ? LIMIT 1`, [month]);
+    if (existing.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `Data for month ${month} already exists. Please delete it before uploading.`,
+      });
+    }
+
+    const filePath = req.file.path;
+    const workbook = xlsx.readFile(filePath);
+
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+
+    // Get raw rows (header + data)
+    const rawRows = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: null });
+
+    // Extract header and normalize it
+    let headers = rawRows[0];
+
+    // Skip serial column (# or blank)
+    if (
+      headers[0]?.toString().trim() === "#" ||
+      headers[0]?.toString().toLowerCase().includes("sno") ||
+      headers[0] === null
+    ) {
+      headers = headers.slice(1); // remove first column
+    }
+
+    // Normalize headers (spaces -> _, trim)
+    headers = headers.map((h) =>
+      h?.toString().trim().replace(/\s+/g, "_").replace(/[^\w]/g, "_")
+    );
+
+    // Slice only data rows
+    const dataRows = rawRows.slice(1);
+
+    // Create records from headers and values
+    const records = dataRows.map((row) => {
+      const obj = {};
+      headers.forEach((key, i) => {
+        obj[key] = row[i + (row.length - headers.length)] ?? null;
+      });
+
+      // Normalize month
+      obj.month = month;
+
+      // Fix date conversion (optional)
+      obj.DOJ = parseExcelDate(obj.DOJ);
+      obj.DOL = parseExcelDate(obj.DOL);
+
+      return obj;
+    });
+
+    // Log preview
+    console.log("✅ First Record Preview:", records[0]);
+
+    const insertValues = records.map((r) => [
+      r.Customer,
+      r.Service,
+      r.Circle,
+      r.Cluster,
+      r.Process,
+      r.Emp_Code,
+      r.Name,
+      r.DOJ,
+      r.DOL,
+      r.Status,
+      r.Category_Job_Role,
+      r.Job_Category,
+      r.Stand_Job_Role,
+      r.month,
+    ]);
+
+    await pool.query(
+      `INSERT INTO mnpr (
+    Customer, Service, Circle, Cluster, Process, Emp_Code, Name,
+    DOJ, DOL, Status, Category_Job_Role, Job_Category, Stand_Job_Role, month
+  ) VALUES ?`,
+      [insertValues]
+    );
+
+    // Clean up uploaded file
+    fs.unlinkSync(filePath);
+
+    res.json({ success: true, message: `Data uploaded successfully for all companies in ${month}` });
+
+  } catch (error) {
+    console.error("❌ Upload All Error:", error);
+    res.status(500).json({ success: false, message: "Upload failed", error });
+  }
+});
+
 app.delete("/api/mnpr", async (req, res) => {
+  const { month, company } = req.query;
+
+  if (!month || !company) {
+    return res.status(400).json({ success: false, message: "Month and company are required." });
+  }
+
+  try {
+    const [result] = await pool.query(
+      `DELETE FROM mnpr WHERE month = ? AND customer = ?`,
+      [month, company]
+    );
+
+    if (result.affectedRows > 0) {
+      res.json({ success: true, message: `Deleted data for ${company} - ${month}` });
+    } else {
+      res.status(404).json({ success: false, message: "No matching data found." });
+    }
+  } catch (error) {
+    console.error("❌ Delete Error:", error);
+    res.status(500).json({ success: false, message: "Delete failed", error });
+  }
+});
+
+app.delete("/api/mnpr/delete-all", async (req, res) => {
   const { month } = req.query;
 
   if (!month) {
@@ -374,12 +480,35 @@ app.delete("/api/mnpr", async (req, res) => {
 
   try {
     const [result] = await pool.query(`DELETE FROM mnpr WHERE month = ?`, [month]);
-    res.status(200).json({ success: true, message: `Deleted ${result.affectedRows} records for month ${month}` });
+
+    if (result.affectedRows > 0) {
+      res.json({ success: true, message: `All data for month ${month} deleted.` });
+    } else {
+      res.status(404).json({ success: false, message: "No data found for that month." });
+    }
   } catch (error) {
-    console.error("❌ Deletion Error:", error);
-    res.status(500).json({ success: false, message: "Deletion failed", error });
+    console.error("❌ Delete All Error:", error);
+    res.status(500).json({ success: false, message: "Delete all failed", error });
   }
 });
+
+// GET /api/req — Fetch data from 'req' table in 'ats' database
+app.get("/api/req", async (req, res) => {
+  try {
+    const query = `
+      SELECT Customer, Circle, Service, \`Job Category\`, RQ, Avl, Gap
+      FROM ats.req
+    `;
+
+    const [results] = await pool.query(query);
+    res.status(200).json({ success: true, data: results });
+
+  } catch (error) {
+    console.error("❌ Error fetching req data:", error);
+    res.status(500).json({ success: false, message: "Database query failed", error });
+  }
+});
+
 
 
 // ✅ API to login
